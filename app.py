@@ -1,219 +1,272 @@
 import streamlit as st
-import pandas as pd
-from io import BytesIO
-from datetime import datetime
 from supabase import create_client, Client
+import pandas as pd
+from datetime import datetime
+import io
 import base64
+from PIL import Image
 
-# --- Page Configuration ---
-st.set_page_config(
-    page_title="ဘုံရန်ပုံငွေ & Approval System",
-    page_icon="💰",
-    layout="wide"
-)
+# Streamlit Page Config
+st.set_page_config(page_title="ဘုံရန်ပုံငွေ System", page_icon="💰", layout="wide")
 
-# --- 1. Supabase Client Setup ---
-# Secrets မိုလို့ Streamlit Cloud Secrets ထဲမှာ ထည့်ထားရပါမည်
-try:
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-except Exception as e:
-    st.error("Supabase API Secrets မတွေ့ရှိပါ။ Streamlit Advanced Settings ထဲတွင် Secrets ထည့်ပေးပါ။")
+# Supabase Setup
+@st.cache_resource
+def init_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
+
+supabase = init_supabase()
+
+# ----------------- Helper Functions -----------------
+def get_fund_info():
+    res = supabase.table("fund").select("total_amount").eq("id", 1).execute()
+    if res.data:
+        return res.data[0]["total_amount"]
+    return 1000000.0
+
+def authenticate_user(username, password):
+    res = supabase.table("users").select("*").eq("username", username).eq("password_hash", password).execute()
+    if res.data:
+        return res.data[0]
+    return None
+
+def get_all_users():
+    res = supabase.table("users").select("id, username, role").execute()
+    return res.data if res.data else []
+
+def get_approved_total():
+    res = supabase.table("requests").select("amount").eq("status", "Approved").execute()
+    if res.data:
+        return sum(item["amount"] for item in res.data)
+    return 0.0
+
+# ----------------- Session State (Login System) -----------------
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# ----------------- Login Screen -----------------
+if not st.session_state.logged_in:
+    st.title("💰 ဘုံရန်ပုံငွေ & Shareholder Approval System")
+    st.subheader("🔐 စနစ်သို့ ဝင်ရောက်ရန် Login ဝင်ပါ")
+    
+    with st.form("login_form"):
+        username_input = st.text_input("Username")
+        password_input = st.text_input("Password", type="password")
+        submit_button = st.form_submit_button("Login ဝင်မည်")
+        
+        if submit_button:
+            user = authenticate_user(username_input, password_input)
+            if user:
+                st.session_state.logged_in = True
+                st.session_state.user = user
+                st.success(f"ကြိုဆိုပါတယ် {user['username']} ({user['role'].capitalize()})")
+                st.rerun()
+            else:
+                st.error("Username သို့မဟုတ် Password မှားယွင်းနေပါသည်။")
     st.stop()
 
-# Helper Functions
-def get_fund_info():
-    response = supabase.table("fund").select("total_amount, admin_password").eq("id", 1).execute()
-    if response.data:
-        return response.data[0]["total_amount"], response.data[0]["admin_password"]
-    return 1000000, "1234"
+# ----------------- Main Dashboard (Logged In) -----------------
+current_user = st.session_state.user
 
-def update_fund_amount(new_amount):
-    supabase.table("fund").update({"total_amount": new_amount}).eq("id", 1).execute()
+# Sidebar - User Info & Logout
+st.sidebar.title("👤 အကောင့် အချက်အလက်")
+st.sidebar.write(f"**အသုံးပြုသူ:** {current_user['username']}")
+st.sidebar.write(f"**ရာထူး:** {current_user['role'].capitalize()}")
 
-def update_admin_password(new_pass):
-    supabase.table("fund").update({"admin_password": new_pass}).eq("id", 1).execute()
+if st.sidebar.button("🚪 Logout ထွက်မည်"):
+    st.session_state.logged_in = False
+    st.session_state.user = None
+    st.rerun()
 
-# --- 2. App ၏ Header နှင့် လက်ကျန်ငွေ ပြသခြင်း ---
 st.title("💰 ဘုံရန်ပုံငွေ & Shareholder Approval System")
 
-total_fund, admin_password = get_fund_info()
+# Dashboard Metrics
+total_fund = get_fund_info()
+total_approved = get_approved_total()
+current_balance = total_fund - total_approved
 
-# Approved ဖြစ်ပြီးသား စာရင်းများ ပေါင်းလဒ်
-approved_res = supabase.table("requests").select("amount").eq("status", "Approved").execute()
-approved_total = sum([item['amount'] for item in approved_res.data]) if approved_res.data else 0.0
+col1, col2, col3 = st.columns(3)
+col1.metric("💵 မူလရန်ပုံငွေ (Total Fund)", f"{total_fund:,.0f} MMK")
+col2.metric("💸 သုံးစွဲပြီး ပမာဏ (Approved)", f"{total_approved:,.0f} MMK")
+col3.metric("📊 လက်ရှိကျန်ငွေ (Current Balance)", f"{current_balance:,.0f} MMK")
 
-current_balance = total_fund - approved_total
+st.markdown("---")
 
-# Top Info Card
-col_bal1, col_bal2, col_bal3 = st.columns(3)
-with col_bal1:
-    st.metric(label="💵 မူလရန်ပုံငွေ (Total Fund)", value=f"{total_fund:,.0f} MMK")
-with col_bal2:
-    st.metric(label="💸 သုံးစွဲပြီး ပမာဏ (Total Approved)", value=f"{approved_total:,.0f} MMK")
-with col_bal3:
-    st.metric(label="📊 လက်ရှိကျန်ငွေ (Current Balance)", value=f"{current_balance:,.0f} MMK")
+# Navigation Tabs (Role ယူပြီး ခွဲခြားထားပါသည်)
+tabs = ["📝 ငွေထုတ်ရန် တောင်းဆိုမည်", "✅ Shareholder Approval", "📊 လချုပ် စာရင်း"]
+if current_user["role"] == "owner":
+    tabs.append("⚙️ Owner Control (Users & System)")
 
-st.divider()
+selected_tab = st.tabs(tabs)
 
-# Tab ၄ ခု ခွဲခြားထားခြင်း
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📝 ငွေထုတ်ရန် တောင်းဆိုမည်", 
-    "✅ Shareholder Approval", 
-    "📊 လချုပ် စာရင်း & Excel Export",
-    "⚙️ ရန်ပုံငွေ ပြင်ဆင်ခြင်း (Owner Only)"
-])
-
-# --- Tab 1: Request တင်ရန် ---
-with tab1:
-    st.subheader("ငွေထုတ်ယူရန် အကြောင်းပြချက် ပေးပါ")
+# ----------------- TAB 1: Request Money -----------------
+with selected_tab[0]:
+    st.subheader("✍️ ငွေထုတ်ယူရန် အကြောင်းပြချက် ပေးပါ")
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        applicant = st.selectbox("တောင်းခံသူ (Shareholder):", ["Shareholder 1", "Shareholder 2", "Shareholder 3", "Shareholder 4"])
-        amount = st.number_input("ငွေပမာဏ (MMK):", min_value=1000, step=5000)
-    
-    with col_b:
-        request_date = st.date_input("ရက်စွဲ (Date):", value=datetime.today())
-        reason = st.text_input("အသုံးပြုမည့် အကြောင်းပြချက်:")
-    
-    uploaded_file = st.file_uploader("📄 အထောက်အထား PDF ဖိုင်တွဲရန် (Optional):", type=["pdf"])
-    
-    if st.button("Submit Request", type="primary"):
-        if reason:
-            file_b64 = None
-            file_name = None
-            if uploaded_file is not None:
-                file_bytes = uploaded_file.read()
-                file_b64 = base64.b64encode(file_bytes).decode('utf-8')
-                file_name = uploaded_file.name
+    with st.form("request_form"):
+        st.write(f"**တောင်းဆိုသူ:** {current_user['username']}")
+        req_date = st.date_input("ရက်စွဲ")
+        amount = st.number_input("ငွေပမာဏ (MMK):", min_value=1000.0, step=1000.0)
+        reason = st.text_area("အသုံးပြုမည့် အကြောင်းပြချက်:")
+        
+        uploaded_file = st.file_uploader("အထောက်အထား PDF သို့မဟုတ် Image ပူးတွဲရန် (Optional)", type=["pdf", "jpg", "jpeg", "png"])
+        
+        submit_req = st.form_submit_button("တောင်းဆိုမှု လျှောက်ထားမည်")
+        
+        if submit_req:
+            if amount > current_balance:
+                st.error("လက်ရှိကျန်ငွေထက် ပိုမိုတောင်းဆို၍ မရပါ!")
+            elif not reason:
+                st.warning("အကြောင်းပြချက် ဖြည့်သွင်းပေးပါ။")
+            else:
+                file_b64 = None
+                file_name = None
+                file_type = None
                 
-            data_payload = {
-                "applicant": applicant,
-                "reason": reason,
-                "amount": amount,
-                "request_date": str(request_date),
-                "file_data": file_b64,
-                "file_name": file_name,
-                "approvals": 0,
-                "status": "Pending"
-            }
-            supabase.table("requests").insert(data_payload).execute()
-            st.success("Request တင်ပြီးပါပြီ! ကျန် Shareholder ၃ ယောက်ရဲ့ Approve ကို စောင့်ပါ။")
-            st.rerun()
-        else:
-            st.warning("အကြောင်းပြချက် ဖြည့်ပေးပါ။")
+                if uploaded_file:
+                    file_bytes = uploaded_file.read()
+                    file_b64 = base64.b64encode(file_bytes).decode('utf-8')
+                    file_name = uploaded_file.name
+                    file_type = uploaded_file.type
+                
+                req_data = {
+                    "applicant": current_user["username"],
+                    "user_id": current_user["id"],
+                    "reason": reason,
+                    "amount": amount,
+                    "request_date": str(req_date),
+                    "file_data": file_b64,
+                    "file_name": file_name,
+                    "file_type": file_type,
+                    "status": "Pending"
+                }
+                
+                supabase.table("requests").insert(req_data).execute()
+                st.success("တောင်းဆိုမှု အောင်မြင်စွာ ပေးပို့လိုက်ပါပြီ!")
+                st.rerun()
 
-# --- Tab 2: Approve ပေးရန် ---
-with tab2:
-    st.subheader("ခွင့်ပြုချက်ပေးရန် စာရင်းများ")
-    st.info("💡 ကျန် Shareholder ၃ ယောက် Approve ပေးပါက ငွေထုတ်ယူခွင့် ရရှိမည် ဖြစ်သည်။")
+# ----------------- TAB 2: Approval & Reject -----------------
+with selected_tab[1]:
+    st.subheader("🗳️ လျှောက်ထားချက်များအား စစ်ဆေး/အတည်ပြုရန်")
     
-    pending_res = supabase.table("requests").select("*").eq("status", "Pending").order("id", desc=True).execute()
-    pending_requests = pending_res.data
+    pending_res = supabase.table("requests").select("*").eq("status", "Pending").execute()
+    pending_requests = pending_res.data if pending_res.data else []
     
     if not pending_requests:
-        st.success("လက်ရှိတွင် စစ်ဆေးရန် Pending Request များ မရှိပါ။")
-    
-    for req in pending_requests:
-        req_id = req["id"]
-        req_applicant = req["applicant"]
-        req_reason = req["reason"]
-        req_amount = req["amount"]
-        req_date = req["request_date"]
-        req_file_data = req["file_data"]
-        req_file_name = req["file_name"]
-        req_approvals = req["approvals"]
-        
-        col1, col2 = st.columns([4, 2])
-        with col1:
-            st.markdown(f"**{req_applicant}** | 📅 {req_date}")
-            st.markdown(f"**အကြောင်းပြချက်:** {req_reason} ({req_amount:,.0f} MMK)")
-            st.caption(f"လက်ရှိ Approvals: {req_approvals}/3")
-            
-            if req_file_data and req_file_name:
-                pdf_bytes = base64.b64decode(req_file_data)
-                st.download_button(
-                    label=f"📎 {req_file_name} (PDF ကြည့်ရန်)",
-                    data=pdf_bytes,
-                    file_name=req_file_name,
-                    mime="application/pdf",
-                    key=f"pdf_{req_id}"
-                )
-        
-        with col2:
-            if st.button("Approve ပေးမည်", key=f"app_{req_id}"):
-                new_count = req_approvals + 1
-                new_status = "Approved" if new_count >= 3 else "Pending"
+        st.info("လက်ရှိတွင် စစ်ဆေးရန် တောင်းဆိုချက်များ မရှိပါ။")
+    else:
+        for req in pending_requests:
+            with st.expander(f"📌 {req['applicant']} - {req['amount']:,.0f} MMK ({req['request_date']})"):
+                st.write(f"**အကြောင်းပြချက်:** {req['reason']}")
                 
-                supabase.table("requests").update({"approvals": new_count, "status": new_status}).eq("id", req_id).execute()
-                st.success("Approve ပေးလိုက်ပါပြီ!")
-                st.rerun()
-        st.divider()
+                # Attachment Display (PDF / Image)
+                if req.get("file_data"):
+                    st.write("**ပူးတွဲပါ အထောက်အထား:**")
+                    file_bytes = base64.b64decode(req["file_data"])
+                    
+                    if req.get("file_type") and "image" in req["file_type"]:
+                        img = Image.open(io.BytesIO(file_bytes))
+                        st.image(img, caption=req["file_name"], use_column_width=True)
+                    else:
+                        st.download_button("📄 PDF ဖိုင် ဒေါင်းလုဒ်ဆွဲရန်", file_bytes, file_name=req["file_name"])
+                
+                col_app, col_rej = st.columns(2)
+                
+                # Approve
+                if col_app.button(f"✅ Approve (အတည်ပြုမည်)", key=f"app_{req['id']}"):
+                    supabase.table("requests").update({"status": "Approved"}).eq("id", req['id']).execute()
+                    st.success("Approve လုပ်ပြီးပါပြီ!")
+                    st.rerun()
+                
+                # Reject with Note
+                with col_rej:
+                    reject_note = st.text_input("Reject လုပ်ရသည့် အကြောင်းပြချက်:", key=f"note_{req['id']}")
+                    if st.button(f"❌ Reject (ငြင်းပယ်မည်)", key=f"rej_{req['id']}"):
+                        if not reject_note:
+                            st.warning("Reject လုပ်ရသည့် အကြောင်းပြချက် ရေးပေးပါ။")
+                        else:
+                            supabase.table("requests").update({
+                                "status": "Rejected",
+                                "reject_note": reject_note
+                            }).eq("id", req['id']).execute()
+                            st.error("Reject လုပ်ပြီးပါပြီ!")
+                            st.rerun()
 
-# --- Tab 3: Excel Export ---
-with tab3:
-    st.subheader("အသုံးစရိတ် စာရင်းများနှင့် လချုပ် Excel ထုတ်ရန်")
+# ----------------- TAB 3: Statement & Export -----------------
+with selected_tab[2]:
+    st.subheader("📜 လချုပ် ရာဇဝင်နှင့် မှတ်တမ်းများ")
     
-    all_res = supabase.table("requests").select("id, request_date, applicant, reason, amount, file_name, approvals, status").order("id", desc=True).execute()
+    all_res = supabase.table("requests").select("id, applicant, amount, reason, request_date, status, reject_note").execute()
+    all_requests = all_res.data if all_res.data else []
     
-    if all_res.data:
-        df_all = pd.DataFrame(all_res.data)
-        df_all.rename(columns={
-            "request_date": "Date",
-            "applicant": "Applicant",
-            "reason": "Reason",
-            "amount": "Amount_MMK",
-            "file_name": "Attachment",
-            "approvals": "Approvals",
-            "status": "Status"
+    if all_requests:
+        df = pd.DataFrame(all_requests)
+        df.rename(columns={
+            "id": "ID", "applicant": "လျှောက်ထားသူ", "amount": "ပမာဏ",
+            "reason": "အကြောင်းပြချက်", "request_date": "ရက်စွဲ",
+            "status": "အခြေအနေ", "reject_note": "Reject မှတ်ချက်"
         }, inplace=True)
-        st.dataframe(df_all, use_container_width=True)
         
-        output = BytesIO()
+        st.dataframe(df, use_container_width=True)
+        
+        # Excel Export
+        output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_all.to_excel(writer, index=False, sheet_name='Monthly_Report')
+            df.to_excel(writer, index=False, sheet_name='Report')
         excel_data = output.getvalue()
         
         st.download_button(
-            label="📥 လချုပ် စာရင်းအား Excel File အဖြစ် ဒေါင်းလုဒ်ဆွဲမည်",
+            label="📥 Excel Report ဒေါင်းလုဒ်ဆွဲရန်",
             data=excel_data,
-            file_name=f"Monthly_Fund_Report_{datetime.now().strftime('%Y_%m')}.xlsx",
+            file_name=f"Fund_Report_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
     else:
-        st.write("လက်ရှိတွင် စာရင်းဒေတာ မရှိသေးပါ။")
+        st.info("မှတ်တမ်းများ မရှိသေးပါ။")
 
-# --- Tab 4: Owner Only Settings ---
-with tab4:
-    st.subheader("🔒 Owner / Admin စက်တင်")
-    st.caption("ဘုံရန်ပုံငွေ ပမာဏသစ် ပြောင်းလဲခြင်းနှင့် Password ပြောင်းလဲခြင်းများကို ပိုင်ရှင်တစ်ဦးတည်းသာ ပြုလုပ်နိုင်ပါသည်။")
-    
-    pwd_input = st.text_input("Owner Password ရိုက်ထည့်ပါ:", type="password")
-    
-    if pwd_input == admin_password:
-        st.success("🔓 Owner Access Granted!")
+# ----------------- TAB 4: Owner Control Panel -----------------
+if current_user["role"] == "owner":
+    with selected_tab[3]:
+        st.subheader("⚙️ Owner Only Management Panel")
         
-        st.divider()
-        st.markdown("### 💰 ၁။ ရန်ပုံငွေ ပမာဏသစ် ပြောင်းလဲရန်")
-        st.write(f"လက်ရှိ မူလရန်ပုံငွေ: **{total_fund:,.0f} MMK**")
+        # 1. User Management (ထည့်ခြင်း/ပြင်ခြင်း)
+        st.markdown("### 👥 Shareholder အကောင့်များ စီမံရန်")
         
-        new_fund_val = st.number_input("ရန်ပုံငွေ ပမာဏသစ် ထည့်ပါ (MMK):", min_value=0.0, value=float(total_fund), step=50000.0)
-        if st.button("ရန်ပုံငွေ ပမာဏသစ် အတည်ပြုမည်"):
-            update_fund_amount(new_fund_val)
-            st.success("ရန်ပုံငွေ ပမာဏသစ် အောင်မြင်စွာ ပြောင်းလဲပြီးပါပြီ!")
-            st.rerun()
+        users_list = get_all_users()
+        st.table(pd.DataFrame(users_list))
+        
+        with st.expander("➕ Shareholder အကောင့်အသစ် ထည့်မည်"):
+            new_user = st.text_input("Username သစ်:")
+            new_pass = st.text_input("Password သစ်:", type="password")
+            new_role = st.selectbox("Role", ["shareholder", "owner"])
             
-        st.divider()
-        st.markdown("### 🔑 ၂။ Owner Password ပြောင်းလဲရန်")
-        new_pass_input = st.text_input("Password အသစ် ရိုက်ထည့်ပါ:", type="password")
-        if st.button("Password အသစ် ပြောင်းမည်"):
-            if new_pass_input:
-                update_admin_password(new_pass_input)
-                st.success("Password အသစ် ပြောင်းလဲပြီးပါပြီ!")
+            if st.button("အကောင့်ဖန်တီးမည်"):
+                if new_user and new_pass:
+                    res = supabase.table("users").insert({
+                        "username": new_user,
+                        "password_hash": new_pass,
+                        "role": new_role
+                    }).execute()
+                    st.success("User အသစ် ဖန်တီးပြီးပါပြီ!")
+                    st.rerun()
+                else:
+                    st.warning("အချက်အလက်များ ပြည့်စုံစွာ ဖြည့်ပါ။")
+
+        st.markdown("---")
+        
+        # 2. Delete Requests Records
+        st.markdown("### 🗑️ စာရင်းမှ မှတ်တမ်းများ ဖျက်ပစ်ရန်")
+        
+        all_reqs = supabase.table("requests").select("id, applicant, amount, status").execute().data
+        if all_reqs:
+            req_options = {f"ID: {r['id']} | {r['applicant']} | {r['amount']} MMK | ({r['status']})": r['id'] for r in all_reqs}
+            selected_to_delete = st.selectbox("ဖျက်လိုသည့် စာရင်းကို ရွေးပါ:", list(req_options.keys()))
+            
+            if st.button("❌ ရွေးချယ်ထားသော စာရင်းကို ဖျက်မည်"):
+                del_id = req_options[selected_to_delete]
+                supabase.table("requests").delete().eq("id", del_id).execute()
+                st.success("စာရင်းကို ဖျက်ပြီးပါပြီ!")
                 st.rerun()
-            else:
-                st.warning("Password အသစ် ရိုက်ထည့်ပါ။")
-    elif pwd_input:
-        st.error("❌ Password မှားယွင်းနေပါသည်။")
