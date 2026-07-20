@@ -49,7 +49,7 @@ if "user" not in st.session_state:
 
 # ----------------- Login Screen -----------------
 if not st.session_state.logged_in:
-    st.title("💰 Zartar Shareholder Approval System")
+    st.title("💰 Zatar Shareholder Approval System")
     st.subheader("🔐 စနစ်သို့ ဝင်ရောက်ရန် Login ဝင်ပါ")
     
     with st.form("login_form"):
@@ -81,7 +81,7 @@ if st.sidebar.button("🚪 Logout ထွက်မည်"):
     st.session_state.user = None
     st.rerun()
 
-st.title("💰 ဘုံရန်ပုံငွေ & Shareholder Approval System")
+st.title("💰 Zatar Shareholder Approval System")
 
 # Dashboard Metrics
 total_fund = get_fund_info()
